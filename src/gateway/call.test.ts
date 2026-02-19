@@ -543,4 +543,32 @@ describe("callGateway token resolution", () => {
 
     expect(lastClientOptions?.token).toBe("explicit-token");
   });
+
+  it("prefers config token over env token in local mode", async () => {
+    process.env.OPENCLAW_GATEWAY_TOKEN = "env-token";
+    loadConfig.mockReturnValue({
+      gateway: {
+        mode: "local",
+        auth: { token: "config-token" },
+      },
+    });
+
+    await callGateway({ method: "health" });
+
+    expect(lastClientOptions?.token).toBe("config-token");
+  });
+
+  it("falls back to env token when config token is absent", async () => {
+    process.env.OPENCLAW_GATEWAY_TOKEN = "env-token";
+    loadConfig.mockReturnValue({
+      gateway: {
+        mode: "local",
+        auth: {},
+      },
+    });
+
+    await callGateway({ method: "health" });
+
+    expect(lastClientOptions?.token).toBe("env-token");
+  });
 });

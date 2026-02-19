@@ -40,6 +40,19 @@ describe("gateway auth", () => {
     });
   });
 
+  it("prefers config token over env token", () => {
+    expect(
+      resolveGatewayAuth({
+        authConfig: { token: "config-token" },
+        env: {
+          OPENCLAW_GATEWAY_TOKEN: "env-token",
+        } as NodeJS.ProcessEnv,
+      }),
+    ).toMatchObject({
+      token: "config-token",
+    });
+  });
+
   it("does not resolve legacy CLAWDBOT gateway env vars", () => {
     expect(
       resolveGatewayAuth({

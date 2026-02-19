@@ -256,6 +256,18 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
   const resolvedAuthMode = resolvedAuth.mode;
   const tokenValue = resolvedAuth.token;
   const passwordValue = resolvedAuth.password;
+
+  // Reconcile env with resolved auth so in-process callers (embedded agent tool calls,
+  // child processes) use the same token the server validates against.
+  if (typeof tokenValue === "string" && tokenValue.trim().length > 0) {
+    const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
+    if (envToken && envToken !== tokenValue.trim()) {
+      gatewayLog.warn(
+        `OPENCLAW_GATEWAY_TOKEN env (${envToken.slice(0, 8)}…) differs from resolved gateway.auth.token (${tokenValue.trim().slice(0, 8)}…); using resolved token`,
+      );
+    }
+    process.env.OPENCLAW_GATEWAY_TOKEN = tokenValue.trim();
+  }
   const hasToken = typeof tokenValue === "string" && tokenValue.trim().length > 0;
   const hasPassword = typeof passwordValue === "string" && passwordValue.trim().length > 0;
   const hasSharedSecret =

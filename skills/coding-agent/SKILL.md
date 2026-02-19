@@ -96,6 +96,92 @@ process action:kill sessionId:XXX
 
 ---
 
+## Reliable completion detection for coding agents
+
+When Jarvis (or any orchestrator) spawns a coding agent in the background, the hardest
+part is knowing **when it finished** and **whether it succeeded**. Coding agents do not
+have a standard "I'm done" signal — their stdout is noisy, and they may or may not honor
+prompt-based completion hooks.
+
+The solution is `coding-agent-wrap.sh` (bundled with this skill). It wraps any coding
+agent command, captures its exit code, and emits a **deterministic, grep-able marker** at
+the very end of stdout. Jarvis should **always** start coding agents through this wrapper
+when running them in the background.
+
+### How to launch a wrapped coding agent
+
+Use `bash` with `pty:true` and `background:true`. Pass the wrapper script with a `--label`
+to identify the run, then `--` followed by the actual agent command:
+
+```bash
+bash pty:true workdir:~/project background:true command:"coding-agent-wrap.sh --label test-run -- opencode run 'Run the test suite and fix failures'"
+# → returns sessionId: XXX
+```
+
+This starts the coding agent in a background PTY session. The wrapper runs the agent,
+waits for it to exit, then prints the completion marker.
+
+### Marker format
+
+The wrapper always emits one of these lines as the last meaningful output:
+
+```
+[CODING_AGENT_DONE label=test-run status=success exit_code=0]
+[CODING_AGENT_DONE label=test-run status=error exit_code=1]
+```
+
+### How Jarvis should detect completion
+
+After launching the wrapped agent in background, Jarvis should follow this two-step flow:
+
+1. **Poll until the session exits.** Use `process action:poll` with a generous timeout to
+   check when the background session finishes. When `details.status` is `"completed"` or
+   `"failed"`, the process has exited.
+
+2. **Read the log and find the marker.** Use `process action:log` to fetch the session
+   output, then look for the `[CODING_AGENT_DONE` line. Extract the `status` and
+   `exit_code` fields from it.
+
+```
+# Step 1: Poll until done
+process action:poll sessionId:XXX timeout:30000
+# → when details.status == "completed" or "failed", move to step 2
+
+# Step 2: Read the log and extract the marker
+process action:log sessionId:XXX
+# → search output for: [CODING_AGENT_DONE label=test-run status=success exit_code=0]
+# → the marker is always the last meaningful line
+```
+
+**Detection rules:**
+
+| Signal                                        | Meaning                                                         |
+| --------------------------------------------- | --------------------------------------------------------------- |
+| `details.status == "completed"` or `"failed"` | Process exited — safe to read the log                           |
+| Output contains `[CODING_AGENT_DONE`          | Wrapper ran to completion — parse `status=` and `exit_code=`    |
+| No marker found but process exited            | Wrapper was killed or crashed — fall back to `details.exitCode` |
+
+### Quick start examples
+
+```bash
+# One-shot (foreground) with completion marker
+bash pty:true workdir:~/project command:"coding-agent-wrap.sh --label fix-auth -- opencode run 'Fix the auth bug'"
+
+# Background with completion marker
+bash pty:true workdir:~/project background:true command:"coding-agent-wrap.sh --label build-api -- codex exec --full-auto 'Build a REST API'"
+# → sessionId: XXX — poll and read log as described above
+```
+
+### Wrapper flags
+
+| Flag            | Description                                                                                                           |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `--label LABEL` | Identifies this run in the marker (default: `"default"`)                                                              |
+| `--notify`      | Also fires `openclaw system event` on completion (if `openclaw` CLI is available) — see "Optional: auto-notify" below |
+| `--`            | Separator between wrapper flags and the agent command                                                                 |
+
+---
+
 ## Codex CLI
 
 **Model:** `gpt-5.2-codex` is the default (set in ~/.codex/config.toml)
@@ -252,9 +338,29 @@ This prevents the user from seeing only "Agent failed before reply" and having n
 
 ---
 
-## Auto-Notify on Completion
+## Optional: Auto-Notify on Completion
 
-For long-running background tasks, append a wake trigger to your prompt so OpenClaw gets notified immediately when the agent finishes (instead of waiting for the next heartbeat):
+> The primary way to detect completion is the **poll + log** flow described in
+> "Reliable completion detection for coding agents" above. The notification mechanisms
+> below are **optional extras** — they provide an immediate wake signal but are not
+> required for correct detection.
+
+### Wrapper --notify flag (reliable)
+
+Pass `--notify` to the wrapper. After the agent exits, it fires `openclaw system event`
+in addition to the completion marker:
+
+```bash
+bash pty:true workdir:~/project background:true command:"coding-agent-wrap.sh --label todos-api --notify -- codex --yolo exec 'Build a REST API for todos.'"
+```
+
+The wrapper emits `[CODING_AGENT_DONE label=todos-api status=success exit_code=0]` AND
+fires an `openclaw system event` — you get both a grep-able marker and an immediate wake.
+
+### Prompt-based notification (best-effort)
+
+If you cannot use the wrapper, append a wake trigger to your prompt. This relies on the
+coding agent choosing to run the command, so it is less reliable:
 
 ```
 ... your task here.
@@ -271,7 +377,7 @@ bash pty:true workdir:~/project background:true command:"codex --yolo exec 'Buil
 When completely finished, run: openclaw system event --text \"Done: Built todos REST API with CRUD endpoints\" --mode now'"
 ```
 
-This triggers an immediate wake event — Skippy gets pinged in seconds, not 10 minutes.
+This triggers an immediate wake event — but only if the agent actually runs the command.
 
 ---
 
